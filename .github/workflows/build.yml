@@ -13,7 +13,7 @@ jobs:
       - run: mv libs-repo/libs ./libs
       - uses: actions/setup-dotnet@v4
         with:
-          dotnet-version: '6.0.x'
+          dotnet-version: '9.0.x'
       - run: dotnet build -c Release
       - uses: actions/upload-artifact@v4
         with:
