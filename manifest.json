@@ -1,9 +1,9 @@
 {
   "Name": "Bloodlines",
-  "Author": "kaansche",
+  "Author": "umutkaanaltan137-create",
   "Version": "0.1.0",
   "Description": "Animal genetics, bloodlines and ranch life.",
-  "UniqueID": "kaansche.Bloodlines",
+  "UniqueID": "umutkaanaltan137-create.Bloodlines",
   "EntryDll": "Bloodlines.dll",
   "MinimumApiVersion": "4.0.0",
   "UpdateKeys": []
