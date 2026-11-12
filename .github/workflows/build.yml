@@ -1,0 +1,21 @@
+name: build
+on: [push, workflow_dispatch]
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/checkout@v4
+        with:
+          repository: KULLANICI_ADIN/bloodlines-libs
+          token: ${{ secrets.LIBS_TOKEN }}
+          path: libs-repo
+      - run: mv libs-repo/libs ./libs
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '6.0.x'
+      - run: dotnet build -c Release
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Bloodlines
+          path: dist/Bloodlines
