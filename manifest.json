@@ -1,0 +1,10 @@
+{
+  "Name": "Bloodlines",
+  "Author": "kaansche",
+  "Version": "0.1.0",
+  "Description": "Animal genetics, bloodlines and ranch life.",
+  "UniqueID": "kaansche.Bloodlines",
+  "EntryDll": "Bloodlines.dll",
+  "MinimumApiVersion": "4.0.0",
+  "UpdateKeys": []
+}
