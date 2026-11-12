@@ -7,7 +7,7 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/checkout@v4
         with:
-          repository: KULLANICI_ADIN/bloodlines-libs
+          repository: umutkaanaltan137-create/bloodlines-libs
           token: ${{ secrets.LIBS_TOKEN }}
           path: libs-repo
       - run: mv libs-repo/libs ./libs
