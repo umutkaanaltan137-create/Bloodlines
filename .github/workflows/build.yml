@@ -1,20 +1,240 @@
 name: build
 on: [push, workflow_dispatch]
+
 jobs:
   build:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+
       - uses: actions/checkout@v4
         with:
           repository: umutkaanaltan137-create/bloodlines-libs
           token: ${{ secrets.LIBS_TOKEN }}
           path: libs-repo
+
       - run: mv libs-repo/libs ./libs
+
+      - run: ls libs
+
       - uses: actions/setup-dotnet@v4
         with:
           dotnet-version: '9.0.x'
-      - run: dotnet build -c Release
+
+      - name: generate project
+        run: |
+          mkdir -p src
+          cat > src/Genetics.cs <<'EOF'
+          using System;
+          using System.Collections.Generic;
+
+          namespace Bloodlines.Core
+          {
+              public enum Trait { Yield, Quality, Hardiness, Temperament }
+
+              public class Allele
+              {
+                  public int Value { get; set; }
+                  public bool Dominant { get; set; }
+                  public Allele() { }
+                  public Allele(int value, bool dominant) { Value = value; Dominant = dominant; }
+              }
+
+              public class Gene
+              {
+                  public Allele A { get; set; } = new Allele();
+                  public Allele B { get; set; } = new Allele();
+                  public Gene() { }
+                  public Gene(Allele a, Allele b) { A = a; B = b; }
+
+                  public int Expressed()
+                  {
+                      if (A.Dominant && !B.Dominant) return A.Value;
+                      if (B.Dominant && !A.Dominant) return B.Value;
+                      return (A.Value + B.Value) / 2;
+                  }
+              }
+
+              public class Genome
+              {
+                  public Dictionary<Trait, Gene> Genes { get; set; } = new Dictionary<Trait, Gene>();
+                  public int Generation { get; set; }
+                  public long MotherId { get; set; } = -1;
+                  public long FatherId { get; set; } = -1;
+              }
+
+              public static class Breeder
+              {
+                  public const int MaxValue = 10;
+
+                  public static Genome Founder(Random rng)
+                  {
+                      Genome g = new Genome();
+                      foreach (Trait t in Enum.GetValues(typeof(Trait)))
+                          g.Genes[t] = new Gene(NewAllele(rng), NewAllele(rng));
+                      return g;
+                  }
+
+                  public static Genome Cross(Genome mother, Genome father, Random rng, double mutationRate)
+                  {
+                      Genome child = new Genome();
+                      child.Generation = Math.Max(mother.Generation, father.Generation) + 1;
+                      child.MotherId = mother.MotherId;
+                      child.FatherId = father.FatherId;
+                      foreach (Trait t in Enum.GetValues(typeof(Trait)))
+                      {
+                          Allele a = Mutate(Pick(mother.Genes[t], rng), rng, mutationRate);
+                          Allele b = Mutate(Pick(father.Genes[t], rng), rng, mutationRate);
+                          child.Genes[t] = new Gene(a, b);
+                      }
+                      return child;
+                  }
+
+                  private static Allele NewAllele(Random rng)
+                  {
+                      return new Allele(rng.Next(0, MaxValue + 1), rng.Next(2) == 0);
+                  }
+
+                  private static Allele Pick(Gene g, Random rng)
+                  {
+                      return rng.Next(2) == 0 ? g.A : g.B;
+                  }
+
+                  private static Allele Mutate(Allele a, Random rng, double rate)
+                  {
+                      if (rng.NextDouble() >= rate) return a;
+                      int v = a.Value + (rng.Next(2) == 0 ? -1 : 1);
+                      if (v < 0) v = 0;
+                      if (v > MaxValue) v = MaxValue;
+                      return new Allele(v, a.Dominant);
+                  }
+              }
+          }
+          EOF
+          cat > ModEntry.cs <<'EOF'
+          using System;
+          using System.Collections.Generic;
+          using System.IO;
+          using System.Text;
+          using Bloodlines.Core;
+          using StardewModdingAPI;
+          using StardewModdingAPI.Events;
+          using StardewValley;
+
+          namespace Bloodlines
+          {
+              public class SaveModel
+              {
+                  public int SchemaVersion { get; set; } = 1;
+                  public Dictionary<long, Genome> Animals { get; set; } = new Dictionary<long, Genome>();
+              }
+
+              public class ModEntry : Mod
+              {
+                  private SaveModel Data = new SaveModel();
+                  private readonly Random Rng = new Random();
+
+                  public override void Entry(IModHelper helper)
+                  {
+                      helper.Events.GameLoop.SaveLoaded += this.OnSaveLoaded;
+                      helper.Events.GameLoop.Saving += this.OnSaving;
+                      helper.Events.GameLoop.DayStarted += this.OnDayStarted;
+                      this.Monitor.Log("Bloodlines v0.1 yuklendi.", LogLevel.Info);
+                  }
+
+                  private void OnSaveLoaded(object? sender, SaveLoadedEventArgs e)
+                  {
+                      this.Data = this.Helper.Data.ReadSaveData<SaveModel>("bloodlines") ?? new SaveModel();
+                  }
+
+                  private void OnSaving(object? sender, SavingEventArgs e)
+                  {
+                      this.Helper.Data.WriteSaveData("bloodlines", this.Data);
+                  }
+
+                  private void OnDayStarted(object? sender, DayStartedEventArgs e)
+                  {
+                      try
+                      {
+                          int total = 0, added = 0;
+                          StringBuilder sb = new StringBuilder();
+                          sb.AppendLine("=== Bloodlines raporu ===");
+
+                          foreach (FarmAnimal animal in Game1.getFarm().animals.Values)
+                          {
+                              long id = animal.myID.Value;
+                              total++;
+                              if (!this.Data.Animals.ContainsKey(id))
+                              {
+                                  this.Data.Animals[id] = Breeder.Founder(this.Rng);
+                                  added++;
+                              }
+                              Genome g = this.Data.Animals[id];
+                              sb.AppendLine(
+                                  "#" + id + " nesil " + g.Generation +
+                                  " | verim " + g.Genes[Trait.Yield].Expressed() +
+                                  " kalite " + g.Genes[Trait.Quality].Expressed() +
+                                  " dayaniklilik " + g.Genes[Trait.Hardiness].Expressed() +
+                                  " mizac " + g.Genes[Trait.Temperament].Expressed());
+                          }
+
+                          Game1.addHUDMessage(new HUDMessage("Bloodlines: " + total + " hayvan, " + added + " yeni", 2));
+                          this.Monitor.Log(sb.ToString(), LogLevel.Info);
+
+                          try
+                          {
+                              File.WriteAllText(Path.Combine(this.Helper.DirectoryPath, "report.txt"), sb.ToString());
+                          }
+                          catch (Exception ex)
+                          {
+                              this.Monitor.Log("Rapor dosyasi yazilamadi: " + ex.Message, LogLevel.Warn);
+                          }
+                      }
+                      catch (Exception ex)
+                      {
+                          this.Monitor.Log("Bloodlines hata: " + ex, LogLevel.Error);
+                      }
+                  }
+              }
+          }
+          EOF
+          cat > manifest.json <<'EOF'
+          {
+            "Name": "Bloodlines",
+            "Author": "umutkaanaltan137-create",
+            "Version": "0.1.0",
+            "Description": "Animal genetics, bloodlines and ranch life.",
+            "UniqueID": "umutkaanaltan137-create.Bloodlines",
+            "EntryDll": "Bloodlines.dll",
+            "MinimumApiVersion": "4.0.0",
+            "UpdateKeys": []
+          }
+          EOF
+          {
+            echo '<Project Sdk="Microsoft.NET.Sdk">'
+            echo '  <PropertyGroup>'
+            echo '    <TargetFramework>net9.0</TargetFramework>'
+            echo '    <AssemblyName>Bloodlines</AssemblyName>'
+            echo '    <Nullable>enable</Nullable>'
+            echo '    <LangVersion>latest</LangVersion>'
+            echo '    <OutDir>$(MSBuildThisFileDirectory)dist/Bloodlines/</OutDir>'
+            echo '    <AppendTargetFrameworkToOutputPath>false</AppendTargetFrameworkToOutputPath>'
+            echo '  </PropertyGroup>'
+            echo '  <ItemGroup>'
+            for n in "StardewModdingAPI" "Stardew Valley" "StardewValley" "MonoGame.Framework" "xTile" "Netcode"; do
+              if [ -f "libs/$n.dll" ]; then
+                echo "    <Reference Include=\"$n\"><HintPath>libs/$n.dll</HintPath><Private>false</Private></Reference>"
+              fi
+            done
+            echo '  </ItemGroup>'
+            echo '  <ItemGroup>'
+            echo '    <None Include="manifest.json" CopyToOutputDirectory="PreserveNewest" />'
+            echo '  </ItemGroup>'
+            echo '</Project>'
+          } > Bloodlines.csproj
+
+      - run: dotnet build Bloodlines.csproj -c Release
+
       - uses: actions/upload-artifact@v4
         with:
           name: Bloodlines
