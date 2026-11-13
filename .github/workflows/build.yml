@@ -546,7 +546,7 @@ jobs:
           }
           EOF
           gen_csproj() {
-            out=$1; tfm=$2; lib=$3
+            out=$1; tfm=$2; lib=$3; sub=$4
             {
               echo '<Project Sdk="Microsoft.NET.Sdk">'
               echo '  <PropertyGroup>'
@@ -564,7 +564,7 @@ jobs:
               echo '  </ItemGroup>'
               echo '  <ItemGroup>'
               for n in "StardewModdingAPI" "Stardew Valley" "StardewValley" "MonoGame.Framework" "xTile" "Netcode"; do
-                if [ -f "../../$lib/$n.dll" ]; then
+                if [ -f "$lib/$n.dll" ]; then
                   echo "    <Reference Include=\"$n\"><HintPath>../../$lib/$n.dll</HintPath><Private>false</Private></Reference>"
                 fi
               done
@@ -573,15 +573,16 @@ jobs:
               echo '    <None Include="../../manifest.json" Link="manifest.json" CopyToOutputDirectory="PreserveNewest" />'
               echo '  </ItemGroup>'
               echo '</Project>'
-            } > "build/$4/Bloodlines.csproj"
+            } > "build/$sub/Bloodlines.csproj"
           }
-          mkdir -p ../../libs 2>/dev/null || true
-          cd build/android && gen_csproj Bloodlines-Android net9.0 libs android && cd ../..
+          gen_csproj Bloodlines-Android net9.0 libs android
           if [ -f libs-pc/StardewModdingAPI.dll ]; then
-            cd build/pc && gen_csproj Bloodlines-PC net6.0 libs-pc pc && cd ../..
+            gen_csproj Bloodlines-PC net6.0 libs-pc pc
           else
             echo "libs-pc yok, PC derlemesi atlaniyor"
           fi
+          ls -l build/android
+          test -f build/android/Bloodlines.csproj
 
       - run: dotnet build build/android/Bloodlines.csproj -c Release
       - run: |
