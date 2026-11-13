@@ -6,47 +6,40 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-
       - uses: actions/checkout@v4
         with:
           repository: umutkaanaltan137-create/bloodlines-libs
           token: ${{ secrets.LIBS_TOKEN }}
           path: libs-repo
-
       - run: mv libs-repo/libs ./libs
-
-      - run: ls libs
-
       - uses: actions/setup-dotnet@v4
         with:
-          dotnet-version: '9.0.x'
+          dotnet-version: |
+            6.0.x
+            9.0.x
 
-      - name: generate project
+      - name: generate
         run: |
-          mkdir -p src
+          mkdir -p src i18n build/android build/pc
           cat > src/Genetics.cs <<'EOF'
           using System;
           using System.Collections.Generic;
-
           namespace Bloodlines.Core
           {
-              public enum Trait { Yield, Quality, Hardiness, Temperament }
-
+              public enum Trait { Yield, Quality, Hardiness, Temperament, Instinct }
               public class Allele
               {
                   public int Value { get; set; }
                   public bool Dominant { get; set; }
                   public Allele() { }
-                  public Allele(int value, bool dominant) { Value = value; Dominant = dominant; }
+                  public Allele(int v, bool d) { Value = v; Dominant = d; }
               }
-
               public class Gene
               {
                   public Allele A { get; set; } = new Allele();
                   public Allele B { get; set; } = new Allele();
                   public Gene() { }
                   public Gene(Allele a, Allele b) { A = a; B = b; }
-
                   public int Expressed()
                   {
                       if (A.Dominant && !B.Dominant) return A.Value;
@@ -54,146 +47,488 @@ jobs:
                       return (A.Value + B.Value) / 2;
                   }
               }
-
               public class Genome
               {
                   public Dictionary<Trait, Gene> Genes { get; set; } = new Dictionary<Trait, Gene>();
                   public int Generation { get; set; }
                   public long MotherId { get; set; } = -1;
                   public long FatherId { get; set; } = -1;
+                  public string LineId { get; set; } = "";
+                  public double Inbreeding { get; set; }
+                  public double HybridVigor { get; set; }
+                  public int AgeDays { get; set; }
+                  public double Care { get; set; } = 0.5;
               }
-
               public static class Breeder
               {
                   public const int MaxValue = 10;
-
-                  public static Genome Founder(Random rng)
+                  public static Genome Founder(Random r)
                   {
                       Genome g = new Genome();
+                      g.LineId = "L" + r.Next(0x1000, 0xFFFF).ToString("X");
                       foreach (Trait t in Enum.GetValues(typeof(Trait)))
-                          g.Genes[t] = new Gene(NewAllele(rng), NewAllele(rng));
+                          g.Genes[t] = new Gene(New(r), New(r));
                       return g;
                   }
-
-                  public static Genome Cross(Genome mother, Genome father, Random rng, double mutationRate)
+                  public static void Ensure(Genome g, Random r)
                   {
-                      Genome child = new Genome();
-                      child.Generation = Math.Max(mother.Generation, father.Generation) + 1;
-                      child.MotherId = mother.MotherId;
-                      child.FatherId = father.FatherId;
                       foreach (Trait t in Enum.GetValues(typeof(Trait)))
-                      {
-                          Allele a = Mutate(Pick(mother.Genes[t], rng), rng, mutationRate);
-                          Allele b = Mutate(Pick(father.Genes[t], rng), rng, mutationRate);
-                          child.Genes[t] = new Gene(a, b);
-                      }
-                      return child;
+                          if (!g.Genes.ContainsKey(t)) g.Genes[t] = new Gene(New(r), New(r));
                   }
-
-                  private static Allele NewAllele(Random rng)
+                  public static Genome Elite(Random r)
                   {
-                      return new Allele(rng.Next(0, MaxValue + 1), rng.Next(2) == 0);
+                      Genome g = Founder(r);
+                      foreach (Trait t in Enum.GetValues(typeof(Trait)))
+                          g.Genes[t] = new Gene(new Allele(7 + r.Next(4), true), new Allele(5 + r.Next(5), false));
+                      return g;
                   }
-
-                  private static Allele Pick(Gene g, Random rng)
+                  public static Genome Cross(Genome m, Genome f, Random r, double rate, double inb, double vig)
                   {
-                      return rng.Next(2) == 0 ? g.A : g.B;
+                      Genome c = new Genome();
+                      c.Generation = Math.Max(m.Generation, f.Generation) + 1;
+                      c.LineId = m.LineId; c.Inbreeding = inb; c.HybridVigor = vig;
+                      foreach (Trait t in Enum.GetValues(typeof(Trait)))
+                          c.Genes[t] = new Gene(Mut(Pick(m.Genes[t], r), r, rate), Mut(Pick(f.Genes[t], r), r, rate));
+                      return c;
                   }
-
-                  private static Allele Mutate(Allele a, Random rng, double rate)
+                  public static double AgeFactor(int d)
                   {
-                      if (rng.NextDouble() >= rate) return a;
-                      int v = a.Value + (rng.Next(2) == 0 ? -1 : 1);
+                      if (!true) return 1;
+                      if (d < 20) return 0.75;
+                      if (d < 90) return 1.0;
+                      if (d < 150) return 0.85;
+                      return 0.6;
+                  }
+                  public static double Score(Genome g, Trait t, bool aging = true)
+                  {
+                      double v = g.Genes[t].Expressed();
+                      v *= (1.0 - 0.5 * g.Inbreeding);
+                      v *= (1.0 + 0.15 * g.HybridVigor);
+                      v *= (0.6 + 0.4 * g.Care);
+                      if (aging) v *= AgeFactor(g.AgeDays);
                       if (v < 0) v = 0;
                       if (v > MaxValue) v = MaxValue;
+                      return Math.Round(v, 1);
+                  }
+                  public static HashSet<long> Anc(Dictionary<long, Genome> reg, long id, int depth)
+                  {
+                      HashSet<long> s = new HashSet<long>();
+                      List<long> fr = new List<long> { id };
+                      for (int d = 0; d < depth; d++)
+                      {
+                          List<long> nx = new List<long>();
+                          foreach (long c in fr)
+                          {
+                              Genome g;
+                              if (!reg.TryGetValue(c, out g)) continue;
+                              if (g.MotherId >= 0 && s.Add(g.MotherId)) nx.Add(g.MotherId);
+                              if (g.FatherId >= 0 && s.Add(g.FatherId)) nx.Add(g.FatherId);
+                          }
+                          fr = nx;
+                          if (fr.Count == 0) break;
+                      }
+                      return s;
+                  }
+                  public static double Related(Dictionary<long, Genome> reg, long a, long b)
+                  {
+                      if (a == b) return 1.0;
+                      HashSet<long> x = Anc(reg, a, 3), y = Anc(reg, b, 3);
+                      x.Add(a); y.Add(b);
+                      int min = Math.Min(x.Count, y.Count);
+                      if (min == 0) return 0;
+                      int sh = 0;
+                      foreach (long v in x) if (y.Contains(v)) sh++;
+                      return (double)sh / min;
+                  }
+                  static Allele New(Random r) { return new Allele(r.Next(0, MaxValue + 1), r.Next(2) == 0); }
+                  static Allele Pick(Gene g, Random r) { return r.Next(2) == 0 ? g.A : g.B; }
+                  static Allele Mut(Allele a, Random r, double rate)
+                  {
+                      if (r.NextDouble() >= rate) return a;
+                      int v = a.Value + (r.Next(2) == 0 ? -1 : 1);
+                      if (v < 0) v = 0; if (v > MaxValue) v = MaxValue;
                       return new Allele(v, a.Dominant);
                   }
+              }
+          }
+          EOF
+          cat > src/Api.cs <<'EOF'
+          using System;
+          using StardewModdingAPI;
+          namespace Bloodlines
+          {
+              public interface IGenericModConfigMenuApi
+              {
+                  void Register(ModManifest mod, Action reset, Action save, bool titleScreenOnly = false);
+                  void AddBoolOption(ModManifest mod, Func<bool> getValue, Action<bool> setValue, Func<string> name, Func<string> tooltip = null, string fieldId = null);
+                  void AddNumberOption(ModManifest mod, Func<int> getValue, Action<int> setValue, Func<string> name, Func<string> tooltip = null, int? min = null, int? max = null, int? interval = null, Func<int, string> formatValue = null, string fieldId = null);
+                  void AddTextOption(ModManifest mod, Func<string> getValue, Action<string> setValue, Func<string> name, Func<string> tooltip = null, string[] allowedValues = null, Func<string, string> formatAllowedValue = null, string fieldId = null);
               }
           }
           EOF
           cat > ModEntry.cs <<'EOF'
           using System;
           using System.Collections.Generic;
-          using System.IO;
+          using System.Reflection;
           using System.Text;
           using Bloodlines.Core;
+          using Microsoft.Xna.Framework;
+          using Microsoft.Xna.Framework.Graphics;
           using StardewModdingAPI;
           using StardewModdingAPI.Events;
           using StardewValley;
+          using StardewValley.Menus;
 
           namespace Bloodlines
           {
+              public class ModConfig
+              {
+                  public int MutationPercent { get; set; } = 4;
+                  public bool EnableDisease { get; set; } = true;
+                  public string DiseaseSeverity { get; set; } = "normal";
+                  public bool EnableAging { get; set; } = true;
+                  public bool EnableDeath { get; set; } = false;
+                  public int LifespanDays { get; set; } = 220;
+                  public bool ShowHud { get; set; } = true;
+                  public bool PremiumFeed { get; set; } = false;
+                  public string LineName { get; set; } = "";
+                  public bool TreatSickNow { get; set; } = false;
+                  public bool VaccinateNow { get; set; } = false;
+                  public bool BuyStudNow { get; set; } = false;
+              }
+              public class AnimalHealth
+              {
+                  public string Illness { get; set; } = "";
+                  public int DaysLeft { get; set; }
+                  public int ImmuneDays { get; set; }
+                  public bool Carrier { get; set; }
+                  public int Lonely { get; set; }
+              }
               public class SaveModel
               {
-                  public int SchemaVersion { get; set; } = 1;
+                  public int SchemaVersion { get; set; } = 4;
                   public Dictionary<long, Genome> Animals { get; set; } = new Dictionary<long, Genome>();
+                  public Dictionary<long, AnimalHealth> Health { get; set; } = new Dictionary<long, AnimalHealth>();
+                  public Dictionary<long, long> Bonds { get; set; } = new Dictionary<long, long>();
+                  public List<long> PregnantLastNight { get; set; } = new List<long>();
+                  public double Reputation { get; set; }
               }
-
               public class ModEntry : Mod
               {
                   private SaveModel Data = new SaveModel();
+                  private ModConfig Config = new ModConfig();
                   private readonly Random Rng = new Random();
+                  private string Diag = "";
+                  private IClickableMenu? CachedMenu;
+                  private FarmAnimal? CachedAnimal;
 
-                  public override void Entry(IModHelper helper)
+                  public override void Entry(IModHelper h)
                   {
-                      helper.Events.GameLoop.SaveLoaded += this.OnSaveLoaded;
-                      helper.Events.GameLoop.Saving += this.OnSaving;
-                      helper.Events.GameLoop.DayStarted += this.OnDayStarted;
-                      this.Monitor.Log("Bloodlines v0.1 yuklendi.", LogLevel.Info);
+                      Config = h.ReadConfig<ModConfig>();
+                      h.Events.GameLoop.GameLaunched += OnLaunched;
+                      h.Events.GameLoop.SaveLoaded += OnSaveLoaded;
+                      h.Events.GameLoop.Saving += OnSaving;
+                      h.Events.GameLoop.DayStarted += OnDayStarted;
+                      h.Events.Display.RenderedActiveMenu += OnRenderedMenu;
+                      Monitor.Log("Bloodlines v0.4 loaded.", LogLevel.Info);
                   }
 
-                  private void OnSaveLoaded(object? sender, SaveLoadedEventArgs e)
-                  {
-                      this.Data = this.Helper.Data.ReadSaveData<SaveModel>("bloodlines") ?? new SaveModel();
-                  }
-
-                  private void OnSaving(object? sender, SavingEventArgs e)
-                  {
-                      this.Helper.Data.WriteSaveData("bloodlines", this.Data);
-                  }
-
-                  private void OnDayStarted(object? sender, DayStartedEventArgs e)
+                  private void OnLaunched(object? s, GameLaunchedEventArgs e)
                   {
                       try
                       {
-                          int total = 0, added = 0;
-                          StringBuilder sb = new StringBuilder();
-                          sb.AppendLine("=== Bloodlines raporu ===");
-
-                          foreach (FarmAnimal animal in Game1.getFarm().animals.Values)
-                          {
-                              long id = animal.myID.Value;
-                              total++;
-                              if (!this.Data.Animals.ContainsKey(id))
-                              {
-                                  this.Data.Animals[id] = Breeder.Founder(this.Rng);
-                                  added++;
-                              }
-                              Genome g = this.Data.Animals[id];
-                              sb.AppendLine(
-                                  "#" + id + " nesil " + g.Generation +
-                                  " | verim " + g.Genes[Trait.Yield].Expressed() +
-                                  " kalite " + g.Genes[Trait.Quality].Expressed() +
-                                  " dayaniklilik " + g.Genes[Trait.Hardiness].Expressed() +
-                                  " mizac " + g.Genes[Trait.Temperament].Expressed());
-                          }
-
-                          Game1.addHUDMessage(new HUDMessage("Bloodlines: " + total + " hayvan, " + added + " yeni", 2));
-                          this.Monitor.Log(sb.ToString(), LogLevel.Info);
-
-                          try
-                          {
-                              File.WriteAllText(Path.Combine(this.Helper.DirectoryPath, "report.txt"), sb.ToString());
-                          }
-                          catch (Exception ex)
-                          {
-                              this.Monitor.Log("Rapor dosyasi yazilamadi: " + ex.Message, LogLevel.Warn);
-                          }
+                          var api = Helper.ModRegistry.GetApi<IGenericModConfigMenuApi>("spacechase0.GenericModConfigMenu");
+                          if (api == null) return;
+                          api.Register(ModManifest, () => Config = new ModConfig(), () => Helper.WriteConfig(Config));
+                          api.AddTextOption(ModManifest, () => Config.LineName, v => Config.LineName = v, () => "Line name");
+                          api.AddNumberOption(ModManifest, () => Config.MutationPercent, v => Config.MutationPercent = v, () => "Mutation %", null, 0, 50);
+                          api.AddBoolOption(ModManifest, () => Config.EnableDisease, v => Config.EnableDisease = v, () => "Disease");
+                          api.AddTextOption(ModManifest, () => Config.DiseaseSeverity, v => Config.DiseaseSeverity = v, () => "Severity", null, new[] { "mild", "normal", "brutal" });
+                          api.AddBoolOption(ModManifest, () => Config.EnableAging, v => Config.EnableAging = v, () => "Aging");
+                          api.AddBoolOption(ModManifest, () => Config.EnableDeath, v => Config.EnableDeath = v, () => "Death");
+                          api.AddNumberOption(ModManifest, () => Config.LifespanDays, v => Config.LifespanDays = v, () => "Lifespan", null, 60, 600);
+                          api.AddBoolOption(ModManifest, () => Config.ShowHud, v => Config.ShowHud = v, () => "HUD message");
+                          api.AddBoolOption(ModManifest, () => Config.PremiumFeed, v => Config.PremiumFeed = v, () => "Premium feed (20g/animal/day)");
+                          api.AddBoolOption(ModManifest, () => Config.TreatSickNow, v => Config.TreatSickNow = v, () => "Treat sick now (150g each)");
+                          api.AddBoolOption(ModManifest, () => Config.VaccinateNow, v => Config.VaccinateNow = v, () => "Vaccinate herd (100g each)");
+                          api.AddBoolOption(ModManifest, () => Config.BuyStudNow, v => Config.BuyStudNow = v, () => "Buy elite stud (2000g)");
                       }
-                      catch (Exception ex)
+                      catch (Exception ex) { Monitor.Log("GMCM: " + ex.Message, LogLevel.Warn); }
+                  }
+
+                  private void OnSaveLoaded(object? s, SaveLoadedEventArgs e)
+                  {
+                      Data = Helper.Data.ReadSaveData<SaveModel>("bloodlines") ?? new SaveModel();
+                      StringBuilder d = new StringBuilder("--- DIAG ---\n");
+                      try
                       {
-                          this.Monitor.Log("Bloodlines hata: " + ex, LogLevel.Error);
+                          FarmAnimal? first = null; int n = 0;
+                          foreach (FarmAnimal a in Game1.getFarm().animals.Values) { n++; if (first == null) first = a; }
+                          d.AppendLine("animals OK: " + n);
+                          if (first != null)
+                              foreach (string m in new[] { "homeLocation", "type", "isPregnant", "wasPetToday", "friendshipTowardFarmer", "happiness", "displayName" })
+                                  d.AppendLine(m + ": " + (Member(first, m) == null ? "MISSING" : "ok"));
+                          d.AppendLine("season: " + SeasonNow() + " day: " + DayNow());
                       }
+                      catch (Exception ex) { d.AppendLine("ERR " + ex.Message); }
+                      Diag = d.ToString();
+                      Monitor.Log(Diag, LogLevel.Info);
+                  }
+
+                  private void OnSaving(object? s, SavingEventArgs e)
+                  {
+                      Data.PregnantLastNight.Clear();
+                      try
+                      {
+                          foreach (FarmAnimal a in Game1.getFarm().animals.Values)
+                              if (Flag(a, "isPregnant")) Data.PregnantLastNight.Add(a.myID.Value);
+                      }
+                      catch { }
+                      Helper.Data.WriteSaveData("bloodlines", Data);
+                      Helper.WriteConfig(Config);
+                  }
+
+                  private void OnDayStarted(object? s, DayStartedEventArgs e)
+                  {
+                      try
+                      {
+                          List<FarmAnimal> list = new List<FarmAnimal>();
+                          foreach (FarmAnimal a in Game1.getFarm().animals.Values) list.Add(a);
+                          Dictionary<string, List<long>> groups = new Dictionary<string, List<long>>();
+                          Dictionary<long, string> grp = new Dictionary<long, string>();
+                          foreach (FarmAnimal a in list)
+                          {
+                              long id = a.myID.Value; string k = GroupOf(a); grp[id] = k;
+                              if (!groups.ContainsKey(k)) groups[k] = new List<long>();
+                              groups[k].Add(id);
+                              if (!Data.Animals.ContainsKey(id)) Data.Animals[id] = Breeder.Founder(Rng);
+                              Breeder.Ensure(Data.Animals[id], Rng);
+                              if (!Data.Health.ContainsKey(id)) Data.Health[id] = new AnimalHealth();
+                          }
+                          HashSet<long> preg = new HashSet<long>(Data.PregnantLastNight);
+                          int born = 0, sick = 0;
+                          foreach (FarmAnimal a in list)
+                          {
+                              long id = a.myID.Value;
+                              if (Data.Animals[id].Generation != 0 || Data.Animals[id].MotherId >= 0) continue;
+                              if (Data.Animals[id].AgeDays > 0) continue;
+                              List<long> mates = groups[grp[id]].FindAll(x => x != id && Data.Animals[x].AgeDays > 0);
+                              long mid = -1;
+                              foreach (long m in mates) if (preg.Contains(m)) { mid = m; break; }
+                              if (mid < 0) continue;
+                              Genome mo = Data.Animals[mid];
+                              List<long> dads = mates.FindAll(x => x != mid);
+                              Genome fa; long fid;
+                              if (dads.Count > 0) { fid = dads[Rng.Next(dads.Count)]; fa = Data.Animals[fid]; }
+                              else { fa = Breeder.Founder(Rng); fid = -1; }
+                              double inb = fid >= 0 ? Breeder.Related(Data.Animals, mid, fid) : 0;
+                              double vig = (fid >= 0 && fa.LineId != mo.LineId) ? 1 : 0;
+                              Genome c = Breeder.Cross(mo, fa, Rng, Config.MutationPercent / 100.0, inb, vig);
+                              c.MotherId = mid; c.FatherId = fid;
+                              Data.Animals[id] = c; born++;
+                          }
+                          double sev = Config.DiseaseSeverity == "mild" ? 0.5 : (Config.DiseaseSeverity == "brutal" ? 2.0 : 1.0);
+                          foreach (FarmAnimal a in list)
+                          {
+                              long id = a.myID.Value;
+                              Genome g = Data.Animals[id]; AnimalHealth h = Data.Health[id];
+                              if (Config.EnableAging) g.AgeDays++;
+                              g.Care = Care(a);
+                              if (Config.PremiumFeed && Game1.player.Money >= 20) { Game1.player.Money -= 20; g.Care = Math.Min(1, g.Care + 0.25); }
+                              if (h.ImmuneDays > 0) h.ImmuneDays--;
+                              if (h.Lonely > 0) { h.Lonely--; AddInt(a, "happiness", -20, 0, 255); }
+                              if (h.Illness != "")
+                              {
+                                  h.DaysLeft--;
+                                  if (Flag(a, "wasPetToday")) h.DaysLeft--;
+                                  AddInt(a, "friendshipTowardFarmer", -15, 0, 1000);
+                                  if (h.DaysLeft <= 0) { h.Illness = ""; h.ImmuneDays = 14; h.Carrier = Rng.NextDouble() < 0.25; }
+                                  else sick++;
+                              }
+                              if (Config.EnableDisease && h.Illness == "" && h.ImmuneDays <= 0)
+                              {
+                                  double ch = (0.035 - Breeder.Score(g, Trait.Hardiness) * 0.0028) * sev;
+                                  List<long> barn = groups[grp[id]];
+                                  if (barn.Count > 8) ch *= 1.6;
+                                  foreach (long o in barn)
+                                  {
+                                      if (o == id) continue;
+                                      AnimalHealth oh; if (!Data.Health.TryGetValue(o, out oh)) continue;
+                                      if (oh.Illness != "") ch += 0.10 * sev; else if (oh.Carrier) ch += 0.03 * sev;
+                                  }
+                                  if (ch < 0.001) ch = 0.001;
+                                  if (Rng.NextDouble() < ch) { h.Illness = Rng.Next(2) == 0 ? "cold" : "mastitis"; h.DaysLeft = 3 + Rng.Next(4); sick++; }
+                              }
+                          }
+                          foreach (KeyValuePair<string, List<long>> kv in groups)
+                              for (int i = 0; i < kv.Value.Count; i++)
+                                  for (int j = i + 1; j < kv.Value.Count; j++)
+                                  {
+                                      long x = kv.Value[i], y = kv.Value[j];
+                                      if (Data.Bonds.ContainsKey(x) || Data.Bonds.ContainsKey(y)) continue;
+                                      if (Rng.NextDouble() < 0.02) { Data.Bonds[x] = y; Data.Bonds[y] = x; }
+                                  }
+                          foreach (KeyValuePair<long, long> b in Data.Bonds)
+                          {
+                              if (!grp.ContainsKey(b.Key) || !grp.ContainsKey(b.Value)) continue;
+                              if (grp[b.Key] != grp[b.Value]) { AnimalHealth hh; if (Data.Health.TryGetValue(b.Key, out hh)) hh.Lonely = 3; }
+                          }
+                          if (Config.TreatSickNow)
+                          {
+                              foreach (FarmAnimal a in list)
+                              {
+                                  AnimalHealth h = Data.Health[a.myID.Value];
+                                  if (h.Illness != "" && Game1.player.Money >= 150) { Game1.player.Money -= 150; h.Illness = ""; h.ImmuneDays = 10; }
+                              }
+                              Config.TreatSickNow = false;
+                          }
+                          if (Config.VaccinateNow)
+                          {
+                              foreach (FarmAnimal a in list)
+                              {
+                                  AnimalHealth h = Data.Health[a.myID.Value];
+                                  if (Game1.player.Money >= 100) { Game1.player.Money -= 100; h.ImmuneDays = 28; h.Carrier = false; }
+                              }
+                              Config.VaccinateNow = false;
+                          }
+                          if (Config.BuyStudNow && list.Count > 0 && Game1.player.Money >= 2000)
+                          {
+                              Game1.player.Money -= 2000;
+                              FarmAnimal t = list[Rng.Next(list.Count)];
+                              Genome elite = Breeder.Elite(Rng);
+                              Genome cur = Data.Animals[t.myID.Value];
+                              Genome c = Breeder.Cross(cur, elite, Rng, Config.MutationPercent / 100.0, 0, 1);
+                              c.MotherId = t.myID.Value; c.FatherId = -1;
+                              Data.Animals[t.myID.Value] = c;
+                              Config.BuyStudNow = false;
+                              Game1.addHUDMessage(new HUDMessage("Bloodlines: elite stud applied", 2));
+                          }
+                          if (SeasonNow() == "fall" && DayNow() == 16 && list.Count > 0)
+                          {
+                              double best = 0;
+                              foreach (FarmAnimal a in list)
+                              {
+                                  Genome g = Data.Animals[a.myID.Value];
+                                  double sc = Breeder.Score(g, Trait.Yield) + Breeder.Score(g, Trait.Quality) + Breeder.Score(g, Trait.Hardiness);
+                                  if (sc > best) best = sc;
+                              }
+                              int prize = (int)(500 + best * 100 * (1 + Data.Reputation));
+                              Game1.player.Money += prize;
+                              Data.Reputation = Math.Min(1.0, Data.Reputation + 0.1);
+                              Game1.addHUDMessage(new HUDMessage("Bloodlines: Fair prize " + prize + "g", 2));
+                          }
+                          if (Config.EnableDeath)
+                              foreach (FarmAnimal a in list)
+                                  if (Data.Animals[a.myID.Value].AgeDays > Config.LifespanDays)
+                                      try { Game1.getFarm().animals.Remove(a.myID.Value); } catch { }
+                          if (Config.ShowHud)
+                              Game1.addHUDMessage(new HUDMessage("Bloodlines: " + list.Count + " animals, " + sick + " sick, " + born + " born", 2));
+                      }
+                      catch (Exception ex) { Monitor.Log("Bloodlines day error: " + ex, LogLevel.Error); }
+                  }
+
+                  private void OnRenderedMenu(object? s, RenderedActiveMenuEventArgs e)
+                  {
+                      try
+                      {
+                          IClickableMenu? m = Game1.activeClickableMenu;
+                          if (m == null || m.GetType().Name != "AnimalQueryMenu") { CachedMenu = null; CachedAnimal = null; return; }
+                          if (!ReferenceEquals(m, CachedMenu))
+                          {
+                              CachedMenu = m; CachedAnimal = null;
+                              foreach (FieldInfo f in m.GetType().GetFields(BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance))
+                              {
+                                  object? v = f.GetValue(m);
+                                  if (v is FarmAnimal fa) { CachedAnimal = fa; break; }
+                              }
+                          }
+                          FarmAnimal? a2 = CachedAnimal;
+                          if (a2 == null) return;
+                          long id = a2.myID.Value;
+                          Genome g; if (!Data.Animals.TryGetValue(id, out g)) return;
+                          AnimalHealth h; Data.Health.TryGetValue(id, out h);
+                          string line = Config.LineName != "" ? Config.LineName : g.LineId;
+                          StringBuilder t = new StringBuilder();
+                          t.AppendLine("-- Bloodlines --");
+                          t.AppendLine(line + "  gen " + g.Generation + "  age " + g.AgeDays);
+                          t.AppendLine("Yield " + Breeder.Score(g, Trait.Yield) + "   Quality " + Breeder.Score(g, Trait.Quality));
+                          t.AppendLine("Hardy " + Breeder.Score(g, Trait.Hardiness) + "   Temper " + Breeder.Score(g, Trait.Temperament));
+                          t.AppendLine("Instinct " + Breeder.Score(g, Trait.Instinct) + "   inbred " + Math.Round(g.Inbreeding * 100) + "%");
+                          if (h != null)
+                          {
+                              if (h.Illness != "") t.AppendLine("SICK: " + h.Illness + " (" + h.DaysLeft + "d)");
+                              else if (h.Carrier) t.AppendLine("carrier");
+                              if (h.ImmuneDays > 0) t.AppendLine("immune " + h.ImmuneDays + "d");
+                              if (h.Lonely > 0) t.AppendLine("lonely");
+                          }
+                          string text = t.ToString().TrimEnd();
+                          SpriteFont font = Game1.smallFont;
+                          Vector2 size = font.MeasureString(text);
+                          float x = m.xPositionOnScreen;
+                          float y = m.yPositionOnScreen + m.height + 10;
+                          if (y + size.Y > Game1.uiViewport.Height) y = Math.Max(4, m.yPositionOnScreen - size.Y - 10);
+                          Vector2 pos = new Vector2(x, y);
+                          e.SpriteBatch.DrawString(font, text, pos + new Vector2(2, 2), Color.Black * 0.7f);
+                          e.SpriteBatch.DrawString(font, text, pos, Color.White);
+                      }
+                      catch { }
+                  }
+
+                  static object? Member(object o, string n)
+                  {
+                      Type t = o.GetType();
+                      FieldInfo? f = t.GetField(n, BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance);
+                      if (f != null) return f.GetValue(o);
+                      PropertyInfo? p = t.GetProperty(n, BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance);
+                      return p != null ? p.GetValue(o) : null;
+                  }
+                  static object? Unwrap(object? v)
+                  {
+                      if (v == null) return null;
+                      PropertyInfo? p = v.GetType().GetProperty("Value");
+                      return p != null ? p.GetValue(v) : v;
+                  }
+                  static bool Flag(object o, string n) { object? v = Unwrap(Member(o, n)); return v is bool b && b; }
+                  static int GetInt(object o, string n, int d) { object? v = Unwrap(Member(o, n)); return v is int i ? i : d; }
+                  static void AddInt(object o, string n, int delta, int lo, int hi)
+                  {
+                      try
+                      {
+                          object? raw = Member(o, n); if (raw == null) return;
+                          PropertyInfo? p = raw.GetType().GetProperty("Value");
+                          if (p == null || !p.CanWrite) return;
+                          int cur = GetInt(o, n, 0) + delta;
+                          if (cur < lo) cur = lo; if (cur > hi) cur = hi;
+                          p.SetValue(raw, cur);
+                      }
+                      catch { }
+                  }
+                  static double Care(FarmAnimal a)
+                  {
+                      double c = (GetInt(a, "friendshipTowardFarmer", 500) / 1000.0 + GetInt(a, "happiness", 150) / 255.0) / 2.0;
+                      if (c < 0) c = 0; if (c > 1) c = 1; return c;
+                  }
+                  static string GroupOf(FarmAnimal a)
+                  {
+                      object? h = Unwrap(Member(a, "homeLocation"));
+                      if (h != null) return "h:" + h;
+                      return "t:" + (Unwrap(Member(a, "type")) ?? "?");
+                  }
+                  static string SeasonNow()
+                  {
+                      object? d = Member(typeof(Game1), "Date");
+                      object? s = d != null ? Unwrap(Member(d, "Season")) : null;
+                      if (s != null) return s.ToString()!.ToLower();
+                      object? c = Unwrap(Member(typeof(Game1), "currentSeason"));
+                      return c?.ToString()?.ToLower() ?? "";
+                  }
+                  static int DayNow()
+                  {
+                      object? d = Member(typeof(Game1), "Date");
+                      object? v = d != null ? Unwrap(Member(d, "DayOfMonth")) : null;
+                      if (v is int i) return i;
+                      object? c = Unwrap(Member(typeof(Game1), "dayOfMonth"));
+                      return c is int j ? j : 0;
                   }
               }
           }
@@ -202,40 +537,63 @@ jobs:
           {
             "Name": "Bloodlines",
             "Author": "umutkaanaltan137-create",
-            "Version": "0.1.0",
-            "Description": "Animal genetics, bloodlines and ranch life.",
+            "Version": "0.4.0",
+            "Description": "Animal genetics, bloodlines, disease and ranch life.",
             "UniqueID": "umutkaanaltan137-create.Bloodlines",
             "EntryDll": "Bloodlines.dll",
             "MinimumApiVersion": "4.0.0",
             "UpdateKeys": []
           }
           EOF
-          {
-            echo '<Project Sdk="Microsoft.NET.Sdk">'
-            echo '  <PropertyGroup>'
-            echo '    <TargetFramework>net9.0</TargetFramework>'
-            echo '    <AssemblyName>Bloodlines</AssemblyName>'
-            echo '    <Nullable>enable</Nullable>'
-            echo '    <LangVersion>latest</LangVersion>'
-            echo '    <OutDir>$(MSBuildThisFileDirectory)dist/Bloodlines/</OutDir>'
-            echo '    <AppendTargetFrameworkToOutputPath>false</AppendTargetFrameworkToOutputPath>'
-            echo '  </PropertyGroup>'
-            echo '  <ItemGroup>'
-            for n in "StardewModdingAPI" "Stardew Valley" "StardewValley" "MonoGame.Framework" "xTile" "Netcode"; do
-              if [ -f "libs/$n.dll" ]; then
-                echo "    <Reference Include=\"$n\"><HintPath>libs/$n.dll</HintPath><Private>false</Private></Reference>"
-              fi
-            done
-            echo '  </ItemGroup>'
-            echo '  <ItemGroup>'
-            echo '    <None Include="manifest.json" CopyToOutputDirectory="PreserveNewest" />'
-            echo '  </ItemGroup>'
-            echo '</Project>'
-          } > Bloodlines.csproj
+          gen_csproj() {
+            out=$1; tfm=$2; lib=$3
+            {
+              echo '<Project Sdk="Microsoft.NET.Sdk">'
+              echo '  <PropertyGroup>'
+              echo "    <TargetFramework>$tfm</TargetFramework>"
+              echo '    <AssemblyName>Bloodlines</AssemblyName>'
+              echo '    <Nullable>enable</Nullable>'
+              echo '    <LangVersion>latest</LangVersion>'
+              echo '    <EnableDefaultCompileItems>false</EnableDefaultCompileItems>'
+              echo "    <OutDir>\$(MSBuildThisFileDirectory)../../dist/$out/</OutDir>"
+              echo '    <AppendTargetFrameworkToOutputPath>false</AppendTargetFrameworkToOutputPath>'
+              echo '  </PropertyGroup>'
+              echo '  <ItemGroup>'
+              echo '    <Compile Include="../../ModEntry.cs" />'
+              echo '    <Compile Include="../../src/*.cs" />'
+              echo '  </ItemGroup>'
+              echo '  <ItemGroup>'
+              for n in "StardewModdingAPI" "Stardew Valley" "StardewValley" "MonoGame.Framework" "xTile" "Netcode"; do
+                if [ -f "../../$lib/$n.dll" ]; then
+                  echo "    <Reference Include=\"$n\"><HintPath>../../$lib/$n.dll</HintPath><Private>false</Private></Reference>"
+                fi
+              done
+              echo '  </ItemGroup>'
+              echo '  <ItemGroup>'
+              echo '    <None Include="../../manifest.json" Link="manifest.json" CopyToOutputDirectory="PreserveNewest" />'
+              echo '  </ItemGroup>'
+              echo '</Project>'
+            } > "build/$4/Bloodlines.csproj"
+          }
+          mkdir -p ../../libs 2>/dev/null || true
+          cd build/android && gen_csproj Bloodlines-Android net9.0 libs android && cd ../..
+          if [ -f libs-pc/StardewModdingAPI.dll ]; then
+            cd build/pc && gen_csproj Bloodlines-PC net6.0 libs-pc pc && cd ../..
+          else
+            echo "libs-pc yok, PC derlemesi atlaniyor"
+          fi
 
-      - run: dotnet build Bloodlines.csproj -c Release
-
+      - run: dotnet build build/android/Bloodlines.csproj -c Release
+      - run: |
+          if [ -f build/pc/Bloodlines.csproj ]; then
+            dotnet build build/pc/Bloodlines.csproj -c Release
+          fi
       - uses: actions/upload-artifact@v4
         with:
-          name: Bloodlines
-          path: dist/Bloodlines
+          name: Bloodlines-Android
+          path: dist/Bloodlines-Android
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Bloodlines-PC
+          path: dist/Bloodlines-PC
+          if-no-files-found: ignore
